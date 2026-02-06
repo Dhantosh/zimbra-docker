@@ -1,16 +1,16 @@
 #!/bin/sh
-## Preparing all the variables like IP, Hostname, etc, all of them from the container
+## Preparing variables from the container environment
 sleep 5
 HOSTNAME=$(hostname -a)
 DOMAIN=$(hostname -d)
-CONTAINERIP=$(ip addr | grep 'state UP' -A2 | tail -n1 | awk '{print $2}' | cut -f1  -d'/')
+CONTAINERIP=$(ip addr | grep 'state UP' -A2 | tail -n1 | awk '{print $2}' | cut -f1 -d'/')
 RANDOMHAM=$(date +%s|sha256sum|base64|head -c 10)
 RANDOMSPAM=$(date +%s|sha256sum|base64|head -c 10)
 RANDOMVIRUS=$(date +%s|sha256sum|base64|head -c 10)
 
-## Installing the DNS Server ##
-echo "Configuring DNS Server"
-mv /etc/dnsmasq.conf /etc/dnsmasq.conf.old
+## 1. DNS Configuration (Required every boot for split-DNS)
+echo "Configuring DNS Server for $HOSTNAME.$DOMAIN"
+mv /etc/dnsmasq.conf /etc/dnsmasq.conf.old 2>/dev/null
 cat <<EOF >>/etc/dnsmasq.conf
 server=8.8.8.8
 listen-address=127.0.0.1
@@ -21,9 +21,25 @@ user=root
 EOF
 sudo service dnsmasq restart
 
-##Creating the Zimbra Collaboration Config File ##
-touch /opt/zimbra-install/installZimbraScript
-cat <<EOF >/opt/zimbra-install/installZimbraScript
+## 2. SMART DETECTION: Check if Zimbra is already installed on the Volume
+# We look for localconfig.xml in the LOWERCASE /opt/zimbra path
+if [ -f "/opt/zimbra/conf/localconfig.xml" ]; then
+    echo "--------------------------------------------------------"
+    echo "  EXISTING INSTALLATION DETECTED ON NAS"
+    echo "  Skipping Download/Setup. Starting Zimbra Services..."
+    echo "--------------------------------------------------------"
+    
+    # Start the existing services
+    su - zimbra -c 'zmcontrol restart'
+
+else
+    echo "--------------------------------------------------------"
+    echo "  NO INSTALLATION FOUND. STARTING FRESH SETUP..."
+    echo "--------------------------------------------------------"
+
+    ## Creating the Zimbra Collaboration Config File
+    mkdir -p /opt/zimbra-install
+    cat <<EOF >/opt/zimbra-install/installZimbraScript
 AVDOMAIN="$DOMAIN"
 AVUSER="admin@$DOMAIN"
 CREATEADMIN="admin@$DOMAIN"
@@ -126,25 +142,28 @@ zimbra_require_interprocess_security="1"
 zimbra_server_hostname="$HOSTNAME.$DOMAIN"
 INSTALL_PACKAGES="zimbra-core zimbra-ldap zimbra-logger zimbra-mta zimbra-snmp zimbra-store zimbra-apache zimbra-spell zimbra-memcached zimbra-proxy"
 EOF
-##Install the Zimbra Collaboration ##
-echo "Downloading Zimbra Collaboration 8.8.7"
-wget -O /opt/zimbra-install/zimbra-zcs-8.8.7.tar.gz https://files.zimbra.com/downloads/8.8.7_GA/zcs-8.8.7_GA_1964.UBUNTU16_64.20180223145016.tgz
 
-echo "Extracting files from the archive"
-tar xzvf /opt/zimbra-install/zimbra-zcs-8.8.7.tar.gz -C /opt/zimbra-install/
+    ## Install the Zimbra Collaboration ##
+    echo "Downloading Zimbra Collaboration 8.8.7 (This may take a few minutes...)"
+    wget -O /opt/zimbra-install/zimbra-zcs-8.8.7.tar.gz https://files.zimbra.com/downloads/8.8.7_GA/zcs-8.8.7_GA_1964.UBUNTU16_64.20180223145016.tgz
 
-echo "Update package cache"
-apt update
+    echo "Extracting files from the archive"
+    tar xzvf /opt/zimbra-install/zimbra-zcs-8.8.7.tar.gz -C /opt/zimbra-install/
 
-echo "Installing Zimbra Collaboration just the Software"
-cd /opt/zimbra-install/zcs-* && ./install.sh -s < /opt/zimbra-install/installZimbra-keystrokes
+    echo "Update package cache"
+    apt update
 
-echo "Installing Zimbra Collaboration injecting the configuration"
-/opt/zimbra/libexec/zmsetup.pl -c /opt/zimbra-install/installZimbraScript
+    echo "Installing Zimbra Collaboration Software"
+    cd /opt/zimbra-install/zcs-* && ./install.sh -s < /opt/zimbra-install/installZimbra-keystrokes
 
-su - zimbra -c 'zmcontrol restart'
-echo "You can access now to your Zimbra Collaboration Server"
+    echo "Injecting configuration and initializing database"
+    /opt/zimbra/libexec/zmsetup.pl -c /opt/zimbra-install/installZimbraScript
 
+    su - zimbra -c 'zmcontrol restart'
+    echo "Installation Complete. Access your server now."
+fi
+
+## Keep-alive logic
 if [[ $1 == "-d" ]]; then
   while true; do sleep 1000; done
 fi
